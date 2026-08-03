@@ -1,0 +1,29 @@
+# R and RStudio
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# macOS
+.DS_Store
+
+# Raw data: too large for GitHub
+data/raw/*
+
+# Processed data can be reproduced
+data/processed/*
+
+# Keep empty folders visible in Git
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# renv local package library
+renv/library/
+renv/staging/
+renv/local/
+renv/cellar/
+
+# Temporary files
+*.log
+*.tmp
+*~

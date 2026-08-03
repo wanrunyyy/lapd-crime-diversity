@@ -1,0 +1,2 @@
+number_of_districts,mean_crime,median_crime,sd_crime,min_crime,max_crime,mean_diversity,median_diversity,sd_diversity,min_diversity,max_diversity
+1200,729.2391666666666,617,589.8766882906933,1,4654,0.7166324193503139,0.7616541322835684,0.16530804985024738,-0,0.8800050210437778

@@ -1,0 +1,3 @@
+indicator,morans_i,expected_i,variance,analytical_p_value,permutation_p_value
+Log Total Crime Count,0.29247390129326606,-8.818342151675485e-4,3.0462137160797387e-4,1.0673695237850086e-63,0.001
+Normalized Shannon Crime Diversity Index,0.28623175662405237,-8.818342151675485e-4,3.002215778021002e-4,5.703923132077046e-62,0.001
