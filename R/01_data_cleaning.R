@@ -7,33 +7,39 @@ library(tidyverse)
 library(lubridate)
 
 # File paths
-raw_file <- "data/raw/Crime_Data_from_2020_to_2024.csv"
+crime_file <- "data/raw/Crime_Data_from_2020_to_2024.csv"
+mapping_file <- "data/raw/crime_mapping_final.csv"
 
 dir.create("data/processed", recursive = TRUE, showWarnings = FALSE)
 dir.create("output/tables", recursive = TRUE, showWarnings = FALSE)
 
-if (!file.exists(raw_file)) {
-  stop(
-    "Raw data not found. Place the CSV file at: ",
-    raw_file
-  )
+if (!file.exists(crime_file)) {
+  stop("Missing raw crime data: ", crime_file)
 }
 
-# 1. Import and clean data -----------------------------------------------
+if (!file.exists(mapping_file)) {
+  stop("Missing crime mapping file: ", mapping_file)
+}
 
-crime <- read_csv(
-  raw_file,
-  show_col_types = FALSE
-) %>%
+# 1. Import data ----------------------------------------------------------
+
+crime_raw <- read.csv(
+  crime_file,
+  stringsAsFactors = FALSE
+)
+
+crime_mapping <- read.csv(
+  mapping_file,
+  stringsAsFactors = FALSE
+)
+
+# 2. Clean crime records --------------------------------------------------
+
+crime_clean <- crime_raw %>%
   mutate(
     DATE_OCC = parse_date_time(
-      `DATE OCC`,
+      DATE.OCC,
       orders = "Y b d I:M:S p"
-    ),
-    `Rpt Dist No` = str_pad(
-      as.character(`Rpt Dist No`),
-      width = 4,
-      pad = "0"
     )
   ) %>%
   filter(
@@ -42,25 +48,18 @@ crime <- read_csv(
   ) %>%
   distinct(DR_NO, .keep_all = TRUE) %>%
   filter(
-    !is.na(LAT),
-    !is.na(LON),
     LAT != 0,
     LON != 0
   ) %>%
   mutate(
     year = year(DATE_OCC),
+    month = month(DATE_OCC),
     year_month = floor_date(DATE_OCC, "month"),
-    month_number = month(DATE_OCC),
-    month_name = month(
-      DATE_OCC,
-      label = TRUE,
-      abbr = TRUE
-    ),
     season = case_when(
-      month_number %in% c(12, 1, 2) ~ "Winter",
-      month_number %in% c(3, 4, 5) ~ "Spring",
-      month_number %in% c(6, 7, 8) ~ "Summer",
-      month_number %in% c(9, 10, 11) ~ "Fall"
+      month %in% c(12, 1, 2) ~ "Winter",
+      month %in% c(3, 4, 5) ~ "Spring",
+      month %in% c(6, 7, 8) ~ "Summer",
+      TRUE ~ "Fall"
     ),
     season = factor(
       season,
@@ -68,71 +67,12 @@ crime <- read_csv(
     )
   )
 
-# 2. Consolidate crime descriptions -------------------------------------
+# 3. Apply final crime-category mapping ----------------------------------
 
-crime <- crime %>%
-  mutate(
-    crime_category = case_when(
-      grepl(
-        paste0(
-          "RAPE|SEX|LEWD|PORNOGRAPHY|PEEPING|INDECENT|",
-          "ORAL COPULATION|CHILD ANNOYING"
-        ),
-        `Crm Cd Desc`,
-        ignore.case = TRUE
-      ) ~ "Sexual Crime",
-      
-      grepl(
-        "FIREARM|WEAPON|SHOT|BOMB",
-        `Crm Cd Desc`,
-        ignore.case = TRUE
-      ) ~ "Weapon-related Crime",
-      
-      grepl(
-        paste0(
-          "FRAUD|EMBEZZLEMENT|FORGERY|COUNTERFEIT|",
-          "BUNCO|CREDIT|EXTORTION|COMPUTER"
-        ),
-        `Crm Cd Desc`,
-        ignore.case = TRUE
-      ) ~ "Financial Crime",
-      
-      grepl(
-        "VEHICLE|BIKE|BOAT|DRIVING",
-        `Crm Cd Desc`,
-        ignore.case = TRUE
-      ) ~ "Vehicle-related Crime",
-      
-      grepl(
-        paste0(
-          "ASSAULT|BATTERY|ROBBERY|HOMICIDE|KIDNAPPING|",
-          "THREAT|MANSLAUGHTER|CHILD ABUSE|",
-          "CHILD NEGLECT|STALKING"
-        ),
-        `Crm Cd Desc`,
-        ignore.case = TRUE
-      ) ~ "Violent Crime",
-      
-      grepl(
-        paste0(
-          "THEFT|BURGLARY|SHOPLIFTING|VANDALISM|",
-          "ARSON|PICKPOCKET|PURSE"
-        ),
-        `Crm Cd Desc`,
-        ignore.case = TRUE
-      ) ~ "Property Crime",
-      
-      grepl(
-        paste0(
-          "TRESPASS|VIOLATION|COURT|RESTRAINING|",
-          "CONTEMPT|DISTURBING|DISPERSE|RESISTING"
-        ),
-        `Crm Cd Desc`,
-        ignore.case = TRUE
-      ) ~ "Public Order Crime",
-      
-      TRUE ~ "Other Crime"
-    )
+crime_clean <- crime_clean %>%
+  left_join(
+    crime_mapping,
+    by = c("Crm.Cd.Desc" = "crime_type")
   )
 
 crime_categories <- c(
@@ -146,104 +86,42 @@ crime_categories <- c(
   "Weapon-related Crime"
 )
 
-crime <- crime %>%
-  mutate(
-    crime_category = factor(
-      crime_category,
-      levels = crime_categories
-    )
+# Check that every crime description has a mapping
+if (any(is.na(crime_clean$crime_category))) {
+  stop(
+    "Some crime descriptions are missing from crime_mapping_final.csv."
   )
-
-# 3. Calculate district-level Shannon diversity --------------------------
-
-calculate_shannon <- function(counts) {
-  proportions <- counts / sum(counts)
-  proportions <- proportions[proportions > 0]
-  
-  -sum(proportions * log(proportions))
 }
 
-crime_wide <- crime %>%
-  count(
-    `Rpt Dist No`,
-    crime_category,
-    .drop = FALSE
-  ) %>%
-  pivot_wider(
-    names_from = crime_category,
-    values_from = n,
-    values_fill = 0
-  ) %>%
-  rowwise() %>%
-  mutate(
-    total_crime = sum(
-      c_across(all_of(crime_categories))
-    ),
-    shannon_index = calculate_shannon(
-      c_across(all_of(crime_categories))
-    ),
-    normalized_shannon = shannon_index / log(8)
-  ) %>%
-  ungroup()
-
-district_analysis <- crime_wide %>%
-  select(
-    `Rpt Dist No`,
-    total_crime,
-    shannon_index,
-    normalized_shannon
-  )
-
-# 4. Save essential processed data ---------------------------------------
+# 4. Save cleaned data ----------------------------------------------------
 
 write_rds(
-  crime,
+  crime_clean,
   "data/processed/crime_clean.rds"
 )
 
-write_rds(
-  district_analysis,
-  "data/processed/district_analysis.rds"
-)
-
 write_csv(
-  district_analysis,
-  "output/tables/district_analysis.csv"
-)
-
-write_csv(
-  crime %>%
+  crime_clean %>%
     count(crime_category, name = "crime_count") %>%
-    mutate(proportion = crime_count / sum(crime_count)),
+    mutate(
+      proportion = crime_count / sum(crime_count)
+    ),
   "output/tables/crime_category_summary.csv"
 )
 
 # 5. Reproducibility checks ----------------------------------------------
 
 cat("\nData cleaning completed.\n")
-cat("Crime records:", nrow(crime), "\n")
+cat("Crime records:", nrow(crime_clean), "\n")
 cat(
   "Reporting Districts:",
-  n_distinct(crime$`Rpt Dist No`),
-  "\n"
-)
-cat(
-  "Crime categories:",
-  n_distinct(crime$crime_category),
+  n_distinct(crime_clean$Rpt.Dist.No),
   "\n"
 )
 cat(
   "Date range:",
-  as.character(min(crime$DATE_OCC)),
+  as.character(min(crime_clean$DATE_OCC)),
   "to",
-  as.character(max(crime$DATE_OCC)),
-  "\n\n"
+  as.character(max(crime_clean$DATE_OCC)),
+  "\n"
 )
-
-print(
-  crime %>%
-    count(crime_category) %>%
-    mutate(proportion = n / sum(n))
-)
-
-print(summary(district_analysis$normalized_shannon))

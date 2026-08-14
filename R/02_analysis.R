@@ -1,6 +1,6 @@
 # ============================================================
 # 02_analysis.R
-# Descriptive, spatial, and temporal analyses
+# District, temporal, spatial, regression, and seasonal analyses
 # ============================================================
 
 library(tidyverse)
@@ -10,19 +10,12 @@ library(spdep)
 library(car)
 library(effectsize)
 
+dir.create("data/processed", recursive = TRUE, showWarnings = FALSE)
 dir.create("output/tables", recursive = TRUE, showWarnings = FALSE)
 
-# 1. Load processed data --------------------------------------------------
-
-crime_file <- "data/processed/crime_clean.rds"
-district_file <- "data/processed/district_analysis.rds"
-
-if (!file.exists(crime_file) || !file.exists(district_file)) {
-  stop("Processed data not found. Run R/01_data_cleaning.R first.")
-}
-
-crime <- read_rds(crime_file)
-district_analysis <- read_rds(district_file)
+crime_clean <- read_rds(
+  "data/processed/crime_clean.rds"
+)
 
 crime_categories <- c(
   "Financial Crime",
@@ -42,46 +35,44 @@ calculate_shannon <- function(counts) {
 }
 
 
-# 2. Reporting District descriptive analysis -----------------------------
+# ============================================================
+# 1. Reporting District aggregation
+# ============================================================
 
-district_summary <- district_analysis %>%
+district_summary <- crime_clean %>%
+  group_by(
+    Rpt.Dist.No,
+    crime_category
+  ) %>%
   summarise(
-    number_of_districts = n(),
-    mean_crime = mean(total_crime),
-    median_crime = median(total_crime),
-    sd_crime = sd(total_crime),
-    min_crime = min(total_crime),
-    max_crime = max(total_crime),
-    mean_diversity = mean(normalized_shannon),
-    median_diversity = median(normalized_shannon),
-    sd_diversity = sd(normalized_shannon),
-    min_diversity = min(normalized_shannon),
-    max_diversity = max(normalized_shannon)
+    crime_count = n(),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = crime_category,
+    values_from = crime_count,
+    values_fill = 0
+  ) %>%
+  mutate(
+    total_crime = rowSums(
+      across(all_of(crime_categories))
+    )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    shannon_index = calculate_shannon(
+      c_across(all_of(crime_categories))
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(
+    normalized_shannon =
+      shannon_index / log(8)
   )
 
-pearson_test <- cor.test(
-  district_analysis$total_crime,
-  district_analysis$normalized_shannon,
-  method = "pearson"
-)
-
-spearman_test <- cor.test(
-  district_analysis$total_crime,
-  district_analysis$normalized_shannon,
-  method = "spearman",
-  exact = FALSE
-)
-
-correlation_results <- tibble(
-  method = c("Pearson", "Spearman"),
-  correlation = c(
-    unname(pearson_test$estimate),
-    unname(spearman_test$estimate)
-  ),
-  p_value = c(
-    pearson_test$p.value,
-    spearman_test$p.value
-  )
+write_rds(
+  district_summary,
+  "data/processed/district_summary.rds"
 )
 
 write_csv(
@@ -89,69 +80,127 @@ write_csv(
   "output/tables/district_summary.csv"
 )
 
+
+# ============================================================
+# 2. Monthly Reporting District diversity
+# ============================================================
+
+monthly_diversity <- crime_clean %>%
+  group_by(
+    Rpt.Dist.No,
+    year_month,
+    season,
+    crime_category
+  ) %>%
+  summarise(
+    crime_count = n(),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = crime_category,
+    values_from = crime_count,
+    values_fill = 0
+  ) %>%
+  mutate(
+    total_crime = rowSums(
+      across(all_of(crime_categories))
+    )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    shannon_index = calculate_shannon(
+      c_across(all_of(crime_categories))
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(
+    normalized_shannon =
+      shannon_index / log(8),
+    year = year(year_month),
+    month = month(year_month)
+  )
+
+monthly_average <- monthly_diversity %>%
+  group_by(year_month) %>%
+  summarise(
+    mean_diversity = mean(normalized_shannon),
+    sd_diversity = sd(normalized_shannon),
+    .groups = "drop"
+  )
+
+write_rds(
+  monthly_diversity,
+  "data/processed/monthly_diversity.rds"
+)
+
+write_rds(
+  monthly_average,
+  "data/processed/monthly_average.rds"
+)
+
 write_csv(
-  correlation_results,
-  "output/tables/correlation_results.csv"
+  monthly_average,
+  "output/tables/monthly_average.csv"
 )
 
 
-# 3. Spatial analysis -----------------------------------------------------
+# ============================================================
+# 3. Spatial join
+# ============================================================
 
-shapefile_path <- paste0(
+shape_file <- paste0(
   "data/raw/LAPD_Reporting_District_polygons/",
   "LAPD_Reporting_District_polygons.shp"
 )
 
-if (!file.exists(shapefile_path)) {
-  stop(
-    "Reporting District shapefile not found at: ",
-    shapefile_path
-  )
+if (!file.exists(shape_file)) {
+  stop("Reporting District shapefile not found.")
 }
 
 rd_shape <- st_read(
-  shapefile_path,
+  shape_file,
   quiet = TRUE
 )
 
-# Identify the Reporting District field in the shapefile
-if ("REPDIST" %in% names(rd_shape)) {
-  spatial_id <- "REPDIST"
-} else if ("NAME" %in% names(rd_shape)) {
-  spatial_id <- "NAME"
-} else {
-  stop("The shapefile does not contain REPDIST or NAME.")
-}
-
-rd_shape <- rd_shape %>%
+rd_shape_clean <- rd_shape %>%
+  filter(REPDIST != "0") %>%
   mutate(
-    rd_id = str_pad(
-      as.character(.data[[spatial_id]]),
-      width = 4,
-      side = "left",
-      pad = "0"
+    REPDIST = sprintf(
+      "%04d",
+      as.integer(REPDIST)
     )
-  ) %>%
-  filter(
-    !is.na(rd_id),
-    rd_id != "0000"
-  ) %>%
-  st_make_valid()
-
-rd_spatial <- rd_shape %>%
-  left_join(
-    district_analysis,
-    by = c("rd_id" = "Rpt Dist No")
-  ) %>%
-  filter(
-    !is.na(total_crime),
-    !is.na(normalized_shannon)
-  ) %>%
-  mutate(
-    log_total_crime = log1p(total_crime)
   )
 
-# Queen-contiguity neighbors and row-standardized weights
+district_summary <- district_summary %>%
+  mutate(
+    Rpt.Dist.No = sprintf(
+      "%04d",
+      as.integer(Rpt.Dist.No)
+    )
+  )
+
+rd_spatial <- rd_shape_clean %>%
+  left_join(
+    district_summary,
+    by = c(
+      "REPDIST" = "Rpt.Dist.No"
+    )
+  )
+
+if (sum(is.na(rd_spatial$total_crime)) != 0) {
+  warning("Some Reporting District polygons did not match.")
+}
+
+write_rds(
+  rd_spatial,
+  "data/processed/rd_spatial.rds"
+)
+
+
+# ============================================================
+# 4. Spatial autocorrelation
+# ============================================================
+
 rd_neighbors <- poly2nb(
   rd_spatial,
   queen = TRUE
@@ -163,29 +212,24 @@ rd_weights <- nb2listw(
   zero.policy = TRUE
 )
 
-# Global Moran's I
-global_moran_crime <- moran.test(
-  rd_spatial$log_total_crime,
+moran_crime_count <- moran.test(
+  log1p(rd_spatial$total_crime),
   rd_weights,
-  alternative = "greater",
   zero.policy = TRUE
 )
 
-global_moran_diversity <- moran.test(
+moran_diversity <- moran.test(
   rd_spatial$normalized_shannon,
   rd_weights,
-  alternative = "greater",
   zero.policy = TRUE
 )
 
-# Permutation tests
 set.seed(123)
 
 moran_mc_crime <- moran.mc(
-  rd_spatial$log_total_crime,
+  log1p(rd_spatial$total_crime),
   rd_weights,
   nsim = 999,
-  alternative = "greater",
   zero.policy = TRUE
 )
 
@@ -195,60 +239,34 @@ moran_mc_diversity <- moran.mc(
   rd_spatial$normalized_shannon,
   rd_weights,
   nsim = 999,
-  alternative = "greater",
   zero.policy = TRUE
 )
 
 moran_results <- tibble(
   indicator = c(
-    "Log Total Crime Count",
-    "Normalized Shannon Crime Diversity Index"
+    "Log Crime Count",
+    "Crime Diversity Index"
   ),
   morans_i = c(
-    unname(global_moran_crime$estimate["Moran I statistic"]),
-    unname(global_moran_diversity$estimate["Moran I statistic"])
+    unname(
+      moran_crime_count$estimate[
+        "Moran I statistic"
+      ]
+    ),
+    unname(
+      moran_diversity$estimate[
+        "Moran I statistic"
+      ]
+    )
   ),
-  expected_i = c(
-    unname(global_moran_crime$estimate["Expectation"]),
-    unname(global_moran_diversity$estimate["Expectation"])
+  analytical_p = c(
+    moran_crime_count$p.value,
+    moran_diversity$p.value
   ),
-  variance = c(
-    unname(global_moran_crime$estimate["Variance"]),
-    unname(global_moran_diversity$estimate["Variance"])
-  ),
-  analytical_p_value = c(
-    global_moran_crime$p.value,
-    global_moran_diversity$p.value
-  ),
-  permutation_p_value = c(
+  permutation_p = c(
     moran_mc_crime$p.value,
     moran_mc_diversity$p.value
   )
-)
-
-spatial_join_summary <- tibble(
-  shapefile_polygons = nrow(rd_shape),
-  matched_reporting_districts = nrow(rd_spatial),
-  unmatched_polygons = nrow(rd_shape) - nrow(rd_spatial),
-  minimum_neighbors = min(card(rd_neighbors)),
-  mean_neighbors = mean(card(rd_neighbors)),
-  maximum_neighbors = max(card(rd_neighbors)),
-  districts_without_neighbors = sum(card(rd_neighbors) == 0)
-)
-
-write_csv(
-  moran_results,
-  "output/tables/moran_results.csv"
-)
-
-write_csv(
-  spatial_join_summary,
-  "output/tables/spatial_join_summary.csv"
-)
-
-write_rds(
-  rd_spatial,
-  "data/processed/rd_spatial.rds"
 )
 
 write_rds(
@@ -256,71 +274,24 @@ write_rds(
   "data/processed/rd_weights.rds"
 )
 
+write_csv(
+  moran_results,
+  "output/tables/moran_results.csv"
+)
 
-# 4. Monthly Reporting District diversity --------------------------------
 
-monthly_diversity <- crime %>%
-  count(
-    `Rpt Dist No`,
-    year_month,
-    crime_category,
-    .drop = FALSE
-  ) %>%
-  pivot_wider(
-    names_from = crime_category,
-    values_from = n,
-    values_fill = 0
-  ) %>%
-  rowwise() %>%
-  mutate(
-    total_crime = sum(
-      c_across(all_of(crime_categories))
-    ),
-    shannon_index = calculate_shannon(
-      c_across(all_of(crime_categories))
-    ),
-    normalized_shannon = shannon_index / log(8)
-  ) %>%
-  ungroup() %>%
-  mutate(
-    month_number = month(year_month),
-    season = case_when(
-      month_number %in% c(12, 1, 2) ~ "Winter",
-      month_number %in% c(3, 4, 5) ~ "Spring",
-      month_number %in% c(6, 7, 8) ~ "Summer",
-      month_number %in% c(9, 10, 11) ~ "Fall"
-    ),
-    season = factor(
-      season,
-      levels = c("Winter", "Spring", "Summer", "Fall")
-    )
-  )
-
-monthly_average <- monthly_diversity %>%
-  group_by(year_month) %>%
-  summarise(
-    mean_diversity = mean(normalized_shannon),
-    sd_diversity = sd(normalized_shannon),
-    n = n(),
-    .groups = "drop"
-  )
+# ============================================================
+# 5. Seasonal analysis
+# ============================================================
 
 season_summary <- monthly_diversity %>%
   group_by(season) %>%
   summarise(
-    mean_diversity = mean(normalized_shannon),
-    median_diversity = median(normalized_shannon),
-    sd_diversity = sd(normalized_shannon),
-    min_diversity = min(normalized_shannon),
-    max_diversity = max(normalized_shannon),
+    Mean = mean(normalized_shannon),
+    SD = sd(normalized_shannon),
     n = n(),
-    se = sd_diversity / sqrt(n),
-    ci_95 = qt(0.975, df = n - 1) * se,
     .groups = "drop"
   )
-
-
-# 5. Seasonal statistical analysis ---------------------------------------
 
 levene_result <- leveneTest(
   normalized_shannon ~ season,
@@ -332,48 +303,17 @@ anova_model <- aov(
   data = monthly_diversity
 )
 
-anova_table <- as.data.frame(
-  summary(anova_model)[[1]]
-) %>%
-  rownames_to_column("term") %>%
-  as_tibble()
-
 eta_result <- eta_squared(
-  anova_model,
-  ci = 0.95
-) %>%
-  as.data.frame() %>%
-  as_tibble()
+  anova_model
+)
 
 tukey_result <- TukeyHSD(
   anova_model
-)$season %>%
-  as.data.frame() %>%
-  rownames_to_column("comparison") %>%
-  as_tibble()
-
-levene_table <- as.data.frame(
-  levene_result
-) %>%
-  rownames_to_column("term") %>%
-  as_tibble()
-
-
-# 6. Save temporal and statistical results -------------------------------
-
-write_rds(
-  monthly_diversity,
-  "data/processed/monthly_diversity.rds"
 )
 
 write_rds(
-  anova_model,
-  "data/processed/anova_model.rds"
-)
-
-write_csv(
-  monthly_average,
-  "output/tables/monthly_average.csv"
+  season_summary,
+  "data/processed/season_summary.rds"
 )
 
 write_csv(
@@ -382,60 +322,199 @@ write_csv(
 )
 
 write_csv(
-  levene_table,
+  as.data.frame(levene_result),
   "output/tables/levene_test.csv"
 )
 
 write_csv(
-  anova_table,
+  broom::tidy(anova_model),
   "output/tables/anova_results.csv"
 )
 
 write_csv(
-  eta_result,
+  as.data.frame(eta_result),
   "output/tables/anova_effect_size.csv"
 )
 
 write_csv(
-  tukey_result,
+  as.data.frame(tukey_result$season) %>%
+    rownames_to_column("comparison"),
   "output/tables/tukey_results.csv"
 )
 
-write_rds(
-  rd_spatial,
-  "data/processed/rd_spatial.rds"
+
+# ============================================================
+# 6. Crime count vs crime diversity
+# ============================================================
+
+# Pearson correlation
+correlation_test <- cor.test(
+  log1p(district_summary$total_crime),
+  district_summary$normalized_shannon,
+  method = "pearson"
+)
+
+# Linear regression
+crime_diversity_lm <- lm(
+  normalized_shannon ~ log1p(total_crime),
+  data = district_summary
+)
+
+# Save correlation results
+correlation_results <- tibble(
+  correlation = unname(correlation_test$estimate),
+  p_value = correlation_test$p.value
+)
+
+# Regression coefficients
+regression_results <- broom::tidy(
+  crime_diversity_lm
+)
+
+# Regression fit statistics
+regression_fit <- broom::glance(
+  crime_diversity_lm
+)
+
+# Save results
+write_csv(
+  correlation_results,
+  "output/tables/correlation_results.csv"
+)
+
+write_csv(
+  regression_results,
+  "output/tables/regression_coefficients.csv"
+)
+
+write_csv(
+  regression_fit,
+  "output/tables/regression_fit.csv"
 )
 
 write_rds(
-  monthly_average,
-  "data/processed/monthly_average.rds"
+  crime_diversity_lm,
+  "data/processed/crime_diversity_lm.rds"
+)
+
+
+# ============================================================
+# 7. Half-year spatial-temporal analysis
+# ============================================================
+
+period_levels <- c(
+  "2020 H1", "2020 H2",
+  "2021 H1", "2021 H2",
+  "2022 H1", "2022 H2",
+  "2023 H1", "2023 H2"
+)
+
+crime_st <- crime_clean %>%
+  mutate(
+    period = case_when(
+      year == 2020 & month <= 6 ~ "2020 H1",
+      year == 2020 & month > 6 ~ "2020 H2",
+      year == 2021 & month <= 6 ~ "2021 H1",
+      year == 2021 & month > 6 ~ "2021 H2",
+      year == 2022 & month <= 6 ~ "2022 H1",
+      year == 2022 & month > 6 ~ "2022 H2",
+      year == 2023 & month <= 6 ~ "2023 H1",
+      year == 2023 & month > 6 ~ "2023 H2",
+      TRUE ~ NA_character_
+    ),
+    period = factor(
+      period,
+      levels = period_levels
+    )
+  )
+
+district_period_summary <- crime_st %>%
+  group_by(
+    period,
+    Rpt.Dist.No,
+    crime_category
+  ) %>%
+  summarise(
+    crime_count = n(),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = crime_category,
+    values_from = crime_count,
+    values_fill = 0
+  ) %>%
+  mutate(
+    total_crime = rowSums(
+      across(all_of(crime_categories))
+    )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    shannon_index = calculate_shannon(
+      c_across(all_of(crime_categories))
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(
+    normalized_shannon =
+      shannon_index / log(8),
+    Rpt.Dist.No = sprintf(
+      "%04d",
+      as.integer(Rpt.Dist.No)
+    )
+  )
+
+rd_spatial_period <- do.call(
+  rbind,
+  lapply(
+    period_levels,
+    function(p) {
+      rd_shape_clean %>%
+        mutate(period = p)
+    }
+  )
+)
+
+rd_spatial_period$period <- factor(
+  rd_spatial_period$period,
+  levels = period_levels
+)
+
+rd_spatial_period <- rd_spatial_period %>%
+  left_join(
+    district_period_summary,
+    by = c(
+      "REPDIST" = "Rpt.Dist.No",
+      "period" = "period"
+    )
+  )
+
+write_rds(
+  district_period_summary,
+  "data/processed/district_period_summary.rds"
 )
 
 write_rds(
-  season_summary,
-  "data/processed/season_summary.rds"
+  rd_spatial_period,
+  "data/processed/rd_spatial_period.rds"
 )
 
 
-# 7. Reproducibility checks ----------------------------------------------
+# ============================================================
+# Final checks
+# ============================================================
 
 cat("\nAnalysis completed.\n")
-cat("----------------------------------------\n")
-cat("District records:", nrow(district_analysis), "\n")
-cat("Spatially matched districts:", nrow(rd_spatial), "\n")
-cat("Monthly district observations:", nrow(monthly_diversity), "\n\n")
-
-cat("Correlations:\n")
-print(correlation_results)
-
-cat("\nGlobal Moran's I:\n")
-print(moran_results)
-
-cat("\nSeasonal summary:\n")
-print(season_summary)
-
-cat("\nANOVA:\n")
-print(summary(anova_model))
-
-cat("\nEffect size:\n")
-print(eta_result)
+cat("Districts:", nrow(district_summary), "\n")
+cat("Monthly observations:", nrow(monthly_diversity), "\n")
+cat("Spatial polygons:", nrow(rd_spatial), "\n")
+cat(
+  "Pearson correlation:",
+  round(unname(correlation_test$estimate), 4),
+  "\n"
+)
+cat(
+  "Regression R-squared:",
+  round(summary(crime_diversity_lm)$r.squared, 4),
+  "\n"
+)

@@ -1,13 +1,13 @@
 # ============================================================
 # 03_visualization.R
-# Create and save the final thesis figures
+# Create final EDA figures
 # ============================================================
 
 library(tidyverse)
 library(sf)
 library(spdep)
-library(patchwork)
 library(viridis)
+library(patchwork)
 
 dir.create(
   "output/figures",
@@ -15,33 +15,8 @@ dir.create(
   showWarnings = FALSE
 )
 
-# 1. Load processed data --------------------------------------------------
-
-required_files <- c(
-  "data/processed/district_analysis.rds",
-  "data/processed/rd_spatial.rds",
-  "data/processed/rd_weights.rds",
-  "data/processed/monthly_diversity.rds",
-  "data/processed/monthly_average.rds",
-  "data/processed/season_summary.rds"
-)
-
-missing_files <- required_files[
-  !file.exists(required_files)
-]
-
-if (length(missing_files) > 0) {
-  stop(
-    paste0(
-      "Missing processed files:\n",
-      paste(missing_files, collapse = "\n"),
-      "\n\nRun R/01_data_cleaning.R and R/02_analysis.R first."
-    )
-  )
-}
-
-district_analysis <- read_rds(
-  "data/processed/district_analysis.rds"
+district_summary <- read_rds(
+  "data/processed/district_summary.rds"
 )
 
 rd_spatial <- read_rds(
@@ -64,45 +39,22 @@ season_summary <- read_rds(
   "data/processed/season_summary.rds"
 )
 
+crime_diversity_lm <- read_rds(
+  "data/processed/crime_diversity_lm.rds"
+)
 
-# 2. Crime volume and diversity relationship -----------------------------
-
-volume_diversity_plot <- ggplot(
-  district_analysis,
-  aes(
-    x = total_crime,
-    y = normalized_shannon
-  )
-) +
-  geom_point(
-    alpha = 0.45,
-    size = 2
-  ) +
-  geom_smooth(
-    method = "lm",
-    se = TRUE
-  ) +
-  scale_x_log10() +
-  theme_minimal(base_size = 13) +
-  labs(
-    x = "Total Reported Crime Count (log scale)",
-    y = "Normalized Shannon Crime Diversity Index"
-  )
-
-ggsave(
-  "output/figures/volume_diversity_relationship.png",
-  volume_diversity_plot,
-  width = 8,
-  height = 6,
-  dpi = 300
+rd_spatial_period <- read_rds(
+  "data/processed/rd_spatial_period.rds"
 )
 
 
-# 3. Reporting District maps ---------------------------------------------
+# ============================================================
+# 1. Spatial comparison maps
+# ============================================================
 
 crime_count_map <- ggplot(rd_spatial) +
   geom_sf(
-    aes(fill = log_total_crime),
+    aes(fill = log1p(total_crime)),
     color = "white",
     linewidth = 0.05
   ) +
@@ -112,7 +64,7 @@ crime_count_map <- ggplot(rd_spatial) +
   coord_sf(datum = NA) +
   theme_void() +
   labs(
-    title = "Spatial Distribution of Reported Crime",
+    title = "Spatial Distribution of Crime Count",
     subtitle = "LAPD Reporting Districts"
   )
 
@@ -123,217 +75,185 @@ diversity_map <- ggplot(rd_spatial) +
     linewidth = 0.05
   ) +
   scale_fill_viridis_c(
-    limits = c(0, 1),
-    name = "Diversity Index"
+    limits = c(0.55, 0.90),
+    breaks = c(0.60, 0.70, 0.80, 0.90),
+    oob = scales::squish,
+    name = "Crime Diversity Index"
   ) +
   coord_sf(datum = NA) +
   theme_void() +
   labs(
     title = "Spatial Distribution of Crime Diversity",
-    subtitle = paste(
-      "Normalized Shannon Index by",
-      "LAPD Reporting District"
-    )
+    subtitle = "Normalized Shannon Index"
   )
 
-combined_spatial_maps <- crime_count_map + diversity_map +
-  plot_annotation(
-    title = "Comparison of Crime Volume and Crime Diversity"
-  ) &
-  theme(
-    plot.title = element_text(
-      face = "bold",
-      hjust = 0.5
-    )
-  )
+spatial_comparison <- crime_count_map + diversity_map
 
 ggsave(
   "output/figures/spatial_comparison_maps.png",
-  combined_spatial_maps,
-  width = 14,
-  height = 7,
-  dpi = 300
-)
-
-
-# 4. Moran scatterplots ---------------------------------------------------
-
-crime_z <- as.numeric(
-  scale(rd_spatial$log_total_crime)
-)
-
-diversity_z <- as.numeric(
-  scale(rd_spatial$normalized_shannon)
-)
-
-crime_spatial_lag <- lag.listw(
-  rd_weights,
-  crime_z,
-  zero.policy = TRUE
-)
-
-diversity_spatial_lag <- lag.listw(
-  rd_weights,
-  diversity_z,
-  zero.policy = TRUE
-)
-
-moran_plot_data <- rd_spatial %>%
-  mutate(
-    crime_z = crime_z,
-    diversity_z = diversity_z,
-    crime_spatial_lag = crime_spatial_lag,
-    diversity_spatial_lag = diversity_spatial_lag
-  )
-
-moran_crime_plot <- ggplot(
-  moran_plot_data,
-  aes(
-    x = crime_z,
-    y = crime_spatial_lag
-  )
-) +
-  geom_hline(
-    yintercept = 0,
-    linetype = "dashed"
-  ) +
-  geom_vline(
-    xintercept = 0,
-    linetype = "dashed"
-  ) +
-  geom_point(
-    alpha = 0.45,
-    size = 1.5
-  ) +
-  geom_smooth(
-    method = "lm",
-    formula = y ~ x,
-    se = FALSE
-  ) +
-  theme_minimal(base_size = 12) +
-  labs(
-    title = "Moran Scatterplot: Crime Volume",
-    x = "Standardized Log Crime Count",
-    y = "Spatial Lag"
-  )
-
-moran_diversity_plot <- ggplot(
-  moran_plot_data,
-  aes(
-    x = diversity_z,
-    y = diversity_spatial_lag
-  )
-) +
-  geom_hline(
-    yintercept = 0,
-    linetype = "dashed"
-  ) +
-  geom_vline(
-    xintercept = 0,
-    linetype = "dashed"
-  ) +
-  geom_point(
-    alpha = 0.45,
-    size = 1.5
-  ) +
-  geom_smooth(
-    method = "lm",
-    formula = y ~ x,
-    se = FALSE
-  ) +
-  theme_minimal(base_size = 12) +
-  labs(
-    title = "Moran Scatterplot: Crime Diversity",
-    x = "Standardized Normalized Shannon Index",
-    y = "Spatial Lag"
-  )
-
-combined_moran_plots <- moran_crime_plot +
-  moran_diversity_plot +
-  plot_annotation(
-    title = paste(
-      "Spatial Autocorrelation Across",
-      "LAPD Reporting Districts"
-    )
-  ) &
-  theme(
-    plot.title = element_text(
-      face = "bold",
-      hjust = 0.5
-    )
-  )
-
-ggsave(
-  "output/figures/moran_scatterplots.png",
-  combined_moran_plots,
+  spatial_comparison,
   width = 12,
   height = 6,
   dpi = 300
 )
 
 
-# 5. Monthly crime diversity trend ---------------------------------------
+# ============================================================
+# 2. Moran scatterplots
+# ============================================================
 
-monthly_diversity_plot <- ggplot(
+crime_z <- as.numeric(
+  scale(log1p(rd_spatial$total_crime))
+)
+
+crime_lag <- lag.listw(
+  rd_weights,
+  crime_z,
+  zero.policy = TRUE
+)
+
+diversity_z <- as.numeric(
+  scale(rd_spatial$normalized_shannon)
+)
+
+diversity_lag <- lag.listw(
+  rd_weights,
+  diversity_z,
+  zero.policy = TRUE
+)
+
+moran_plot_crime <- ggplot(
+  data.frame(
+    value = crime_z,
+    lag = crime_lag
+  ),
+  aes(value, lag)
+) +
+  geom_point(
+    alpha = 0.5,
+    color = "steelblue",
+    size = 1
+  ) +
+  geom_smooth(
+    method = "lm",
+    color = "red",
+    se = FALSE
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Moran Scatterplot: Crime Count",
+    x = "Standardized Log Crime Count",
+    y = "Spatial Lag"
+  ) +
+  theme_minimal()
+
+moran_plot_diversity <- ggplot(
+  data.frame(
+    value = diversity_z,
+    lag = diversity_lag
+  ),
+  aes(value, lag)
+) +
+  geom_point(
+    alpha = 0.5,
+    color = "steelblue",
+    size = 1
+  ) +
+  geom_smooth(
+    method = "lm",
+    color = "red",
+    se = FALSE
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Moran Scatterplot: Crime Diversity",
+    x = "Standardized Normalized Shannon Index",
+    y = "Spatial Lag"
+  ) +
+  theme_minimal()
+
+ggsave(
+  "output/figures/moran_scatterplots.png",
+  moran_plot_crime + moran_plot_diversity,
+  width = 12,
+  height = 6,
+  dpi = 300
+)
+
+
+# ============================================================
+# 3. Monthly diversity trend
+# ============================================================
+
+monthly_plot <- ggplot(
   monthly_average,
   aes(
-    x = year_month,
-    y = mean_diversity
+    year_month,
+    mean_diversity
   )
 ) +
   geom_line(linewidth = 0.8) +
-  geom_point(size = 1.8) +
+  geom_point(size = 2) +
   geom_smooth(
     method = "loess",
     se = FALSE,
+    color = "steelblue",
     linewidth = 1
   ) +
-  theme_minimal(base_size = 13) +
   labs(
     title = "Monthly Average Crime Diversity",
     x = "Month",
     y = "Average Normalized Shannon Index"
   ) +
-  theme(
-    plot.title = element_text(
-      face = "bold",
-      hjust = 0.5
-    )
-  )
+  theme_minimal()
 
 ggsave(
   "output/figures/monthly_diversity_trend.png",
-  monthly_diversity_plot,
+  monthly_plot,
   width = 9,
   height = 6,
   dpi = 300
 )
 
 
-# 6. Seasonal distribution -----------------------------------------------
+# ============================================================
+# 4. Seasonal figures
+# ============================================================
 
 seasonal_boxplot <- ggplot(
   monthly_diversity,
   aes(
-    x = season,
-    y = normalized_shannon
+    season,
+    normalized_shannon,
+    fill = season
   )
 ) +
   geom_boxplot(
-    outlier.size = 1,
-    width = 0.6
+    alpha = 0.8,
+    outlier.alpha = 0.3
   ) +
-  theme_minimal(base_size = 13) +
   labs(
     title = "Seasonal Distribution of Crime Diversity",
     x = "Season",
     y = "Normalized Shannon Index"
   ) +
+  theme_minimal() +
   theme(
-    plot.title = element_text(
-      face = "bold",
-      hjust = 0.5
-    )
+    legend.position = "none"
   )
 
 ggsave(
@@ -344,56 +264,218 @@ ggsave(
   dpi = 300
 )
 
-
-# 7. Seasonal means and confidence intervals -----------------------------
-
-seasonal_mean_plot <- ggplot(
+season_mean_plot <- ggplot(
   season_summary,
   aes(
-    x = season,
-    y = mean_diversity
+    season,
+    Mean,
+    fill = season
   )
 ) +
-  geom_point(size = 3) +
+  geom_col(
+    width = 0.6
+  ) +
   geom_errorbar(
     aes(
-      ymin = mean_diversity - ci_95,
-      ymax = mean_diversity + ci_95
+      ymin = Mean - SD,
+      ymax = Mean + SD
     ),
-    width = 0.15,
-    linewidth = 0.8
+    width = 0.2
   ) +
-  theme_minimal(base_size = 13) +
   labs(
-    title = "Mean Crime Diversity by Season",
+    title = "Average Crime Diversity by Season",
     x = "Season",
     y = "Mean Normalized Shannon Index"
   ) +
+  theme_minimal() +
   theme(
-    plot.title = element_text(
-      face = "bold",
-      hjust = 0.5
-    )
+    legend.position = "none"
   )
 
 ggsave(
   "output/figures/seasonal_mean_diversity.png",
-  seasonal_mean_plot,
+  season_mean_plot,
   width = 8,
   height = 6,
   dpi = 300
 )
 
 
-# 8. Completion message ---------------------------------------------------
+# ============================================================
+# 5. Crime count vs crime diversity
+# ============================================================
 
-cat("\nVisualization script completed.\n")
-cat("Figures saved in output/figures/:\n")
-cat(
-  paste0(
-    "- ",
-    list.files("output/figures"),
-    collapse = "\n"
-  ),
-  "\n"
+volume_plot <- ggplot(
+  district_summary,
+  aes(
+    log1p(total_crime),
+    normalized_shannon
+  )
+) +
+  geom_point(
+    alpha = 0.25,
+    color = "steelblue",
+    size = 1.3
+  ) +
+  geom_smooth(
+    method = "lm",
+    color = "red",
+    se = TRUE,
+    linewidth = 1
+  ) +
+  labs(
+    title = "Crime Count and Crime Diversity",
+    x = "Log(Total Crime Count + 1)",
+    y = "Normalized Shannon Index"
+  ) +
+  theme_minimal()
+
+ggsave(
+  "output/figures/volume_diversity_relationship.png",
+  volume_plot,
+  width = 8,
+  height = 6,
+  dpi = 300
 )
+
+hex_plot <- ggplot(
+  district_summary,
+  aes(
+    log1p(total_crime),
+    normalized_shannon
+  )
+) +
+  geom_hex() +
+  labs(
+    x = "Log(Total Crime Count + 1)",
+    y = "Normalized Shannon Index"
+  )
+
+ggsave(
+  "output/figures/volume_diversity_hexbin.png",
+  hex_plot,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+
+# ============================================================
+# 6. Regression diagnostics
+# ============================================================
+
+png(
+  "output/figures/regression_diagnostics.png",
+  width = 1800,
+  height = 1800,
+  res = 250
+)
+
+par(mfrow = c(2, 2))
+plot(crime_diversity_lm)
+par(mfrow = c(1, 1))
+
+dev.off()
+
+
+# ============================================================
+# 7. Spatial-temporal maps
+# ============================================================
+
+crime_count_st_map <- ggplot(
+  rd_spatial_period
+) +
+  geom_sf(
+    aes(fill = log1p(total_crime)),
+    color = "white",
+    linewidth = 0.03
+  ) +
+  scale_fill_viridis_c(
+    name = "Log Crime Count",
+    na.value = "grey90",
+    limits = c(0.7, 6.6),
+    oob = scales::squish
+  ) +
+  facet_wrap(
+    ~ period,
+    ncol = 4
+  ) +
+  coord_sf(datum = NA) +
+  labs(
+    title = "Spatial-Temporal Evolution of Crime Count",
+    subtitle = "LAPD Reporting Districts, 2020–2023"
+  ) +
+  theme_void() +
+  theme(
+    strip.text = element_text(
+      face = "bold",
+      size = 10
+    ),
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    ),
+    plot.subtitle = element_text(
+      hjust = 0.5
+    )
+  )
+
+ggsave(
+  "output/figures/crime_count_spatiotemporal.png",
+  crime_count_st_map,
+  width = 14,
+  height = 7,
+  dpi = 300
+)
+
+diversity_st_map <- ggplot(
+  rd_spatial_period
+) +
+  geom_sf(
+    aes(fill = normalized_shannon),
+    color = "white",
+    linewidth = 0.03
+  ) +
+  scale_fill_viridis_c(
+    name = "Crime Diversity Index",
+    na.value = "grey90",
+    limits = c(0.58, 0.90),
+    breaks = c(0.60, 0.70, 0.80, 0.90),
+    oob = scales::squish
+  ) +
+  facet_wrap(
+    ~ period,
+    ncol = 4
+  ) +
+  coord_sf(datum = NA) +
+  labs(
+    title = "Spatial-Temporal Evolution of Crime Diversity",
+    subtitle = paste(
+      "Normalized Shannon Index by Reporting District,",
+      "2020–2023"
+    )
+  ) +
+  theme_void() +
+  theme(
+    strip.text = element_text(
+      face = "bold",
+      size = 10
+    ),
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    ),
+    plot.subtitle = element_text(
+      hjust = 0.5
+    )
+  )
+
+ggsave(
+  "output/figures/crime_diversity_spatiotemporal.png",
+  diversity_st_map,
+  width = 14,
+  height = 7,
+  dpi = 300
+)
+
+cat("\nAll final EDA figures created successfully.\n")
