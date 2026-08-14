@@ -10,6 +10,9 @@
 # Raw data: too large for GitHub
 data/raw/*
 
+# Keep the crime-category mapping needed for reproduction
+!data/raw/crime_mapping_final.csv
+
 # Processed data can be reproduced
 data/processed/*
 
