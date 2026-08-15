@@ -9,6 +9,7 @@ library(sf)
 library(spdep)
 library(car)
 library(effectsize)
+library(ggplot2)
 
 dir.create("data/processed", recursive = TRUE, showWarnings = FALSE)
 dir.create("output/tables", recursive = TRUE, showWarnings = FALSE)
@@ -141,6 +142,78 @@ write_rds(
 write_csv(
   monthly_average,
   "output/tables/monthly_average.csv"
+)
+
+median_diversity <- median(
+  district_summary$normalized_shannon,
+  na.rm = TRUE
+)
+
+diversity_distribution <- ggplot(
+  district_summary,
+  aes(x = normalized_shannon)
+) +
+  geom_histogram(
+    binwidth = 0.025,
+    boundary = 0,
+    fill = "steelblue",
+    color = "white",
+    linewidth = 0.3,
+    alpha = 0.9
+  ) +
+  geom_vline(
+    xintercept = median_diversity,
+    linetype = "dashed",
+    linewidth = 0.8
+  ) +
+  annotate(
+    "text",
+    x = median_diversity + 0.015,
+    y = 245,
+    label = paste0(
+      "Median = ",
+      round(median_diversity, 3)
+    ),
+    hjust = 0,
+    size = 4
+  ) +
+  labs(
+    title = "Distribution of Crime Diversity",
+    subtitle = "LAPD Reporting Districts, 2020–2023",
+    x = "Normalized Crime Diversity Index",
+    y = "Number of Reporting Districts"
+  ) +
+  scale_x_continuous(
+    breaks = seq(0, 0.9, 0.1),
+    expand = expansion(mult = c(0.01, 0.02))
+  ) +
+  coord_cartesian(
+    xlim = c(0, 0.9)
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(
+      face = "bold",
+      size = 18
+    ),
+    plot.subtitle = element_text(
+      size = 13
+    ),
+    axis.title = element_text(
+      size = 13
+    ),
+    axis.text = element_text(
+      size = 11
+    ),
+    panel.grid.minor = element_blank()
+  )
+
+ggsave(
+  "output/figures/diversity_distribution.png",
+  plot = diversity_distribution,
+  width = 8,
+  height = 5,
+  dpi = 300
 )
 
 
